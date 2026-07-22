@@ -1,0 +1,11 @@
+apiVersion: solution.sap/v1
+kind: Solution
+
+metadata:
+  name: collection-email-agent-12a67
+  version: 1.0.0
+  description: AI agent that drafts personalized collection emails based on customer payment history and outstanding AR items, orchestrated by an n8n workflow.
+
+assets:
+  - ref: ./assets/collection-email-agent/asset.yaml
+  - ref: ./assets/n8n/asset.yaml
