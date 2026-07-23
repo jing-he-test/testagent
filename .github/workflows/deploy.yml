@@ -1,129 +1,97 @@
 name: Deploy to Joule Studio
-
 on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Overwrite existing solution deployment"
+        description: 'Overwrite existing deployment'
         required: false
-        default: "false"
+        default: 'false'
         type: choice
         options:
-          - "false"
-          - "true"
-
+          - 'false'
+          - 'true'
+permissions:
+  contents: read
 jobs:
   deploy:
-    name: Build & Deploy
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ── Step 1: Exchange refresh token for a fresh IAS access token ──────────
-      - name: Get IAS access token
-        id: auth
-        run: |
-          RESPONSE=$(curl -s -X POST \
-            "${{ secrets.JOULE_STUDIO_IAS_URL }}/oauth2/token" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=refresh_token" \
-            -d "refresh_token=${{ secrets.JOULE_STUDIO_REFRESH_TOKEN }}" \
-            -d "client_id=${{ secrets.JOULE_STUDIO_CLIENT_ID }}" \
-            -d "app_tid=${{ secrets.JOULE_STUDIO_APP_TID }}")
+      - name: Package solution
+        run: zip -r solution.zip assets solution.yaml .build
 
-          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.weak_access_token // .access_token')
-
-          if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
-            echo "❌ Failed to get access token. Refresh token may have expired."
-            echo "   Run: jl login <your-login-url>  then update JOULE_STUDIO_REFRESH_TOKEN secret."
-            exit 1
-          fi
-
-          echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "✅ Access token obtained"
-
-      # ── Step 2: Install Joule Studio CLI ─────────────────────────────────────
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Joule Studio CLI
-        run: |
-          npm install -g @sap/joule-work-dev-cli-early-adopters \
-            --registry https://int.repositories.cloud.sap/artifactory/api/npm/build-milestones-npm/ \
-            --silent
-          echo "✅ CLI installed: $(jl --version)"
-
-      # ── Step 3: Build & Deploy ────────────────────────────────────────────────
-      - name: Build and deploy solution
+      - name: Import and deploy solution
         id: deploy
         env:
-          JOULE_STUDIO_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
-          JOULE_STUDIO_TOKEN: ${{ steps.auth.outputs.token }}
+          OVERWRITE: ${{ inputs.force }}
+          JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
+          JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
-          FORCE_FLAG=""
-          if [ "${{ inputs.force }}" = "true" ]; then
-            FORCE_FLAG="--force"
+          export SOLUTION_ID_HINT=""
+          if [ -f ".build" ]; then
+            export SOLUTION_ID_HINT=$(grep "solution_id" .build | cut -d'=' -f2 | tr -d '[:space:]')
+            echo "Solution ID: $SOLUTION_ID_HINT"
           fi
 
-          jl solution build
-          jl solution deploy $FORCE_FLAG
+          python3 -c "
+          import base64, json, os
+          with open('solution.zip','rb') as f:
+              z = base64.b64encode(f.read()).decode()
+          hint = os.environ.get('SOLUTION_ID_HINT','').strip()
+          payload = {
+              'semanticVersion': 'main',
+              'zip': z,
+              'overwrite': os.environ['OVERWRITE'] == 'true'
+          }
+          if hint:
+              payload['solutionId'] = hint
+          with open('/tmp/payload.json','w') as f:
+              json.dump(payload, f)
+          print('Payload:', len(z), 'chars | solutionId:', hint or 'NEW')
+          "
 
-          SOLUTION_ID=$(cat .build | jq -r '.solution_id // empty')
+          RESP=$(curl -s -X POST "$JOULE_HOST/solutions/importZip" \
+            -H "Authorization: Bearer $JOULE_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/payload.json)
+
+          SOLUTION_ID=$(echo "$RESP" | jq -r '.solutionId // empty')
           if [ -z "$SOLUTION_ID" ]; then
-            echo "❌ Could not read solution_id from .build file"
+            echo "Import failed: $RESP"
+            echo "Token may have expired — run jl login and re-sync from Joule Studio UI"
             exit 1
           fi
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
-          echo "✅ Solution deployed: $SOLUTION_ID"
+          echo "Imported: $SOLUTION_ID"
 
-      # ── Step 4: Poll deployment status ───────────────────────────────────────
-      - name: Wait for deployment to complete
+          DEPLOY_RESP=$(curl -s -X POST "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploy" \
+            -H "Authorization: Bearer $JOULE_TOKEN" \
+            -H "Content-Type: application/json")
+          JOB_ID=$(echo "$DEPLOY_RESP" | jq -r '.ID // empty')
+          if [ -z "$JOB_ID" ]; then
+            echo "Deploy failed: $DEPLOY_RESP"
+            exit 1
+          fi
+          echo "Job ID: $JOB_ID"
+
+      - name: Poll deployment status
         env:
-          JOULE_STUDIO_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
-          JOULE_STUDIO_TOKEN: ${{ steps.auth.outputs.token }}
+          JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
+          JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
           SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
-          echo "Polling deployment status for solution $SOLUTION_ID..."
-
           for i in $(seq 1 60); do
-            RESPONSE=$(curl -s \
-              "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
-              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}")
-
-            STATUS=$(echo "$RESPONSE" | jq -r '.value[0].status_code // "pending"')
-            echo "  [$i/60] Status: $STATUS"
-
-            if [ "$STATUS" = "completed" ]; then
-              echo "✅ Deployment completed"
-              break
-            fi
-
-            if [ "$STATUS" = "failed" ] || [ "$STATUS" = "timeout" ]; then
-              echo "❌ Deployment $STATUS"
-              exit 1
-            fi
-
+            STATUS=$(curl -s \
+              "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
+              -H "Authorization: Bearer $JOULE_TOKEN" \
+              | jq -r '.value[0].status_code // "pending"')
+            echo "[$i/60] $STATUS"
+            [ "$STATUS" = "completed" ] && break
+            [ "$STATUS" = "failed" ] || [ "$STATUS" = "timeout" ] && exit 1
             sleep 10
           done
 
-      # ── Step 5: Summary ───────────────────────────────────────────────────────
-      - name: Deployment summary
+      - name: Summary
         if: success()
-        run: |
-          SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
-          ENGAGEMENT_LAYER="${{ secrets.JOULE_STUDIO_ENGAGEMENT_LAYER_URL }}"
-
-          echo "### ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| | |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Solution** | \`ap-invoice-automation-91768\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Solution ID** | \`$SOLUTION_ID\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Environment** | staging |" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$ENGAGEMENT_LAYER" ]; then
-            echo "| **View** | [$ENGAGEMENT_LAYER/new/build/overview/solutions/$SOLUTION_ID]($ENGAGEMENT_LAYER/new/build/overview/solutions/$SOLUTION_ID) |" >> $GITHUB_STEP_SUMMARY
-          fi
+        run: echo "### Deployed ${{ steps.deploy.outputs.solution_id }}" >> $GITHUB_STEP_SUMMARY
