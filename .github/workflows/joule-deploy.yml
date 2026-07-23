@@ -37,16 +37,16 @@ jobs:
             exit 1
           fi
 
-          # Rotate refresh token IMMEDIATELY before anything else can fail
+          # Rotate refresh token IMMEDIATELY so next run works even if deploy fails
           if [ -n "$NEW_REFRESH_TOKEN" ]; then
             pip install PyNaCl -q 2>/dev/null
             KEY_DATA=$(curl -s \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
-            KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id')
-            export GH_PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
-            export NEW_TOKEN="$NEW_REFRESH_TOKEN"
+            KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id' | tr -d '\n\r')
+            export GH_PUBKEY=$(echo "$KEY_DATA" | jq -r '.key' | tr -d '\n\r')
+            export NEW_TOKEN=$(echo "$NEW_REFRESH_TOKEN" | tr -d '\n\r')
             ENCRYPTED=$(python3 .github/encrypt_secret.py)
             curl -s -X PUT \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -57,7 +57,6 @@ jobs:
             echo "Refresh token rotated"
           fi
 
-          # Export access token for subsequent steps
           echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "Access token obtained"
 
