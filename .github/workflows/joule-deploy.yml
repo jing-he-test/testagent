@@ -28,14 +28,16 @@ jobs:
             -d "refresh_token=${{ secrets.JOULE_STUDIO_REFRESH_TOKEN }}" \
             -d "client_id=${{ secrets.JOULE_STUDIO_CLIENT_ID }}" \
             -d "app_tid=${{ secrets.JOULE_STUDIO_APP_TID }}")
+
           ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.weak_access_token // .access_token // empty')
           NEW_REFRESH_TOKEN=$(echo "$RESPONSE" | jq -r '.refresh_token // empty')
+
           if [ -z "$ACCESS_TOKEN" ]; then
             echo "Failed: $(echo "$RESPONSE" | jq -r '.error_description // .error')"
             exit 1
           fi
-          echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "Access token obtained"
+
+          # Rotate refresh token IMMEDIATELY before anything else can fail
           if [ -n "$NEW_REFRESH_TOKEN" ]; then
             pip install PyNaCl -q 2>/dev/null
             KEY_DATA=$(curl -s \
@@ -54,6 +56,10 @@ jobs:
               -d "{\"encrypted_value\":\"$ENCRYPTED\",\"key_id\":\"$KEY_ID\"}" > /dev/null
             echo "Refresh token rotated"
           fi
+
+          # Export access token for subsequent steps
+          echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+          echo "Access token obtained"
 
       - name: Package solution
         run: zip -r solution.zip assets solution.yaml
