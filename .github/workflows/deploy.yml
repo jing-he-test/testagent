@@ -164,4 +164,3 @@ EOF
           echo "| **Solution** | \`ap-invoice-automation-91768\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Solution ID** | \`$SOLUTION_ID\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Host** | \`${{ secrets.JOULE_STUDIO_HOST }}\` |" >> $GITHUB_STEP_SUMMARY
-# trigger re-evaluation
