@@ -18,48 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get IAS access token and rotate refresh token
-        id: auth
-        run: |
-          RESPONSE=$(curl -s -X POST \
-            "${{ secrets.JOULE_STUDIO_IAS_URL }}/oauth2/token" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=refresh_token" \
-            -d "refresh_token=${{ secrets.JOULE_STUDIO_REFRESH_TOKEN }}" \
-            -d "client_id=${{ secrets.JOULE_STUDIO_CLIENT_ID }}" \
-            -d "app_tid=${{ secrets.JOULE_STUDIO_APP_TID }}")
-
-          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.weak_access_token // .access_token // empty')
-          NEW_REFRESH_TOKEN=$(echo "$RESPONSE" | jq -r '.refresh_token // empty')
-
-          if [ -z "$ACCESS_TOKEN" ]; then
-            echo "Failed: $(echo "$RESPONSE" | jq -r '.error_description // .error')"
-            exit 1
-          fi
-
-          # Rotate refresh token IMMEDIATELY so next run works even if deploy fails
-          if [ -n "$NEW_REFRESH_TOKEN" ]; then
-            pip install PyNaCl -q 2>/dev/null
-            KEY_DATA=$(curl -s \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
-            KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id' | tr -d '\n\r')
-            export GH_PUBKEY=$(echo "$KEY_DATA" | jq -r '.key' | tr -d '\n\r')
-            export NEW_TOKEN=$(echo "$NEW_REFRESH_TOKEN" | tr -d '\n\r')
-            ENCRYPTED=$(python3 .github/encrypt_secret.py)
-            curl -s -X PUT \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/secrets/JOULE_STUDIO_REFRESH_TOKEN" \
-              -d "{\"encrypted_value\":\"$ENCRYPTED\",\"key_id\":\"$KEY_ID\"}" > /dev/null
-            echo "Refresh token rotated"
-          fi
-
-          echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "Access token obtained"
-
       - name: Package solution
         run: zip -r solution.zip assets solution.yaml
 
@@ -69,14 +27,18 @@ jobs:
           ZIP_B64=$(base64 -w0 solution.zip)
           OVERWRITE=${{ inputs.force }}
           RESP=$(curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/importZip" \
-            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{\"semanticVersion\":\"main\",\"zip\":\"$ZIP_B64\",\"overwrite\":$OVERWRITE}")
           SOLUTION_ID=$(echo "$RESP" | jq -r '.solutionId // empty')
-          if [ -z "$SOLUTION_ID" ]; then echo "Import failed: $RESP"; exit 1; fi
+          if [ -z "$SOLUTION_ID" ]; then
+            echo "Import failed: $RESP"
+            echo "Token may have expired. Run: jl login  then update JOULE_STUDIO_TOKEN secret"
+            exit 1
+          fi
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
           curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploy" \
-            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
             -H "Content-Type: application/json" > /dev/null
           echo "Deployed: $SOLUTION_ID"
 
@@ -86,7 +48,7 @@ jobs:
           for i in $(seq 1 60); do
             STATUS=$(curl -s \
               "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
-              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+              -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
               | jq -r '.value[0].status_code // "pending"')
             echo "[$i/60] $STATUS"
             [ "$STATUS" = "completed" ] && break
