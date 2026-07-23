@@ -24,23 +24,37 @@ jobs:
       - name: Import and deploy solution
         id: deploy
         run: |
-          ZIP_B64=$(base64 -w0 solution.zip)
           OVERWRITE=${{ inputs.force }}
+
+          # Build JSON with base64 zip using Python (avoids shell arg limit)
+          python3 -c "
+          import base64, json
+          with open('solution.zip','rb') as f:
+              z = base64.b64encode(f.read()).decode()
+          payload = {'semanticVersion':'main','zip':z,'overwrite': ${{ inputs.force == 'true' }} }
+          with open('/tmp/import_payload.json','w') as f:
+              json.dump(payload, f)
+          print('Payload size:', len(z), 'chars')
+          "
+
           RESP=$(curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/importZip" \
             -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{\"semanticVersion\":\"main\",\"zip\":\"$ZIP_B64\",\"overwrite\":$OVERWRITE}")
+            --data-binary @/tmp/import_payload.json)
+
           SOLUTION_ID=$(echo "$RESP" | jq -r '.solutionId // empty')
           if [ -z "$SOLUTION_ID" ]; then
             echo "Import failed: $RESP"
-            echo "Token may have expired. Run: jl login  then update JOULE_STUDIO_TOKEN secret"
+            echo "Token may have expired — run jl login and update JOULE_STUDIO_TOKEN secret"
             exit 1
           fi
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
+          echo "Imported: $SOLUTION_ID"
+
           curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploy" \
             -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
             -H "Content-Type: application/json" > /dev/null
-          echo "Deployed: $SOLUTION_ID"
+          echo "Deploy triggered"
 
       - name: Poll deployment status
         run: |
