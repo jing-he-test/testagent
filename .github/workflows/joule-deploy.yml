@@ -28,6 +28,13 @@ jobs:
           JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
           JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
+          # Read existing solution_id from .build file if present
+          SOLUTION_ID_HINT=""
+          if [ -f ".build" ]; then
+            SOLUTION_ID_HINT=$(grep "solution_id" .build | cut -d'=' -f2 | tr -d '[:space:]')
+            echo "Existing solution_id: $SOLUTION_ID_HINT"
+          fi
+
           # Build JSON payload with Python to avoid shell arg list limit
           python3 -c "
           import base64, json, os
@@ -38,9 +45,12 @@ jobs:
               'zip': z,
               'overwrite': os.environ['OVERWRITE'] == 'true'
           }
+          hint = os.environ.get('SOLUTION_ID_HINT','').strip()
+          if hint:
+              payload['solutionId'] = hint
           with open('/tmp/import_payload.json','w') as f:
               json.dump(payload, f)
-          print('Payload size:', len(z), 'chars')
+          print('Payload size:', len(z), 'chars', '| solutionId:', hint or 'new')
           "
 
           RESP=$(curl -s -X POST "$JOULE_HOST/solutions/importZip" \
@@ -55,7 +65,7 @@ jobs:
             exit 1
           fi
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
-          echo "Imported: $SOLUTION_ID"
+          echo "Solution: $SOLUTION_ID"
 
           curl -s -X POST "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploy" \
             -H "Authorization: Bearer $JOULE_TOKEN" \
@@ -81,4 +91,6 @@ jobs:
 
       - name: Summary
         if: success()
-        run: echo "### Deployed ${{ steps.deploy.outputs.solution_id }}" >> $GITHUB_STEP_SUMMARY
+        run: |
+          echo "### ✅ Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "Solution ID: ${{ steps.deploy.outputs.solution_id }}" >> $GITHUB_STEP_SUMMARY
