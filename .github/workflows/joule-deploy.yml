@@ -23,22 +23,28 @@ jobs:
 
       - name: Import and deploy solution
         id: deploy
+        env:
+          OVERWRITE: ${{ inputs.force }}
+          JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
+          JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
-          OVERWRITE=${{ inputs.force }}
-
-          # Build JSON with base64 zip using Python (avoids shell arg limit)
+          # Build JSON payload with Python to avoid shell arg list limit
           python3 -c "
-          import base64, json
+          import base64, json, os
           with open('solution.zip','rb') as f:
               z = base64.b64encode(f.read()).decode()
-          payload = {'semanticVersion':'main','zip':z,'overwrite': ${{ inputs.force == 'true' }} }
+          payload = {
+              'semanticVersion': 'main',
+              'zip': z,
+              'overwrite': os.environ['OVERWRITE'] == 'true'
+          }
           with open('/tmp/import_payload.json','w') as f:
               json.dump(payload, f)
           print('Payload size:', len(z), 'chars')
           "
 
-          RESP=$(curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/importZip" \
-            -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
+          RESP=$(curl -s -X POST "$JOULE_HOST/solutions/importZip" \
+            -H "Authorization: Bearer $JOULE_TOKEN" \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/import_payload.json)
 
@@ -51,18 +57,21 @@ jobs:
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
           echo "Imported: $SOLUTION_ID"
 
-          curl -s -X POST "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploy" \
-            -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
+          curl -s -X POST "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploy" \
+            -H "Authorization: Bearer $JOULE_TOKEN" \
             -H "Content-Type: application/json" > /dev/null
           echo "Deploy triggered"
 
       - name: Poll deployment status
+        env:
+          JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
+          JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
           SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
           for i in $(seq 1 60); do
             STATUS=$(curl -s \
-              "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
-              -H "Authorization: Bearer ${{ secrets.JOULE_STUDIO_TOKEN }}" \
+              "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
+              -H "Authorization: Bearer $JOULE_TOKEN" \
               | jq -r '.value[0].status_code // "pending"')
             echo "[$i/60] $STATUS"
             [ "$STATUS" = "completed" ] && break
