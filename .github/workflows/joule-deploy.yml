@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Package solution
-        run: zip -r solution.zip assets solution.yaml
+        run: zip -r solution.zip assets solution.yaml .build
 
       - name: Import and deploy solution
         id: deploy
