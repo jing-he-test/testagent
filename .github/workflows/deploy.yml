@@ -20,7 +20,6 @@ jobs:
 
       - name: Package solution
         run: |
-          # Zip everything except .git and .github folders
           zip -r solution.zip assets solution.yaml .build
           echo "ZIP size: $(du -sh solution.zip | cut -f1)"
 
@@ -84,15 +83,25 @@ jobs:
           JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
           SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
-          for i in $(seq 1 60); do
-            STATUS=$(curl -s \
+          START=$(date +%s)
+          MAX_WAIT=2700
+          INTERVAL=30
+          echo "Polling every ${INTERVAL}s, max wait ${MAX_WAIT}s (~45 min)..."
+          while true; do
+            ELAPSED=$(( $(date +%s) - START ))
+            RESP=$(curl -s \
               "$JOULE_HOST/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
-              -H "Authorization: Bearer $JOULE_TOKEN" \
-              | jq -r '.value[0].status_code // "pending"')
-            echo "[$i/60] $STATUS"
-            [ "$STATUS" = "completed" ] && break
-            [ "$STATUS" = "failed" ] || [ "$STATUS" = "timeout" ] && exit 1
-            sleep 10
+              -H "Authorization: Bearer $JOULE_TOKEN")
+            STATUS=$(echo "$RESP" | jq -r '.value[0].status_code // "pending"')
+            printf "[%3ds] Status: %s\n" "$ELAPSED" "$STATUS"
+            [ "$STATUS" = "completed" ] && echo "Deployment succeeded!" && break
+            [ "$STATUS" = "failed" ]   && echo "Deployment failed!"    && exit 1
+            [ "$STATUS" = "timeout" ]  && echo "Deployment timed out!" && exit 1
+            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+              echo "Polling timed out after ${MAX_WAIT}s — last status: $STATUS"
+              exit 1
+            fi
+            sleep $INTERVAL
           done
 
       - name: Summary
