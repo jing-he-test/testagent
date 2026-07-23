@@ -43,14 +43,9 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
             KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id')
-            PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
-            printf '%s' "import base64,os,nacl.public
-pubkey=base64.b64decode(os.environ['GH_PUBKEY']+'==')
-token=os.environ['NEW_TOKEN'].encode()
-pk=nacl.public.PublicKey(pubkey)
-print(base64.b64encode(nacl.public.SealedBox(pk).encrypt(token)).decode())
-" > /tmp/encrypt.py
-            ENCRYPTED=$(GH_PUBKEY="$PUBKEY" NEW_TOKEN="$NEW_REFRESH_TOKEN" python3 /tmp/encrypt.py)
+            export GH_PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
+            export NEW_TOKEN="$NEW_REFRESH_TOKEN"
+            ENCRYPTED=$(python3 .github/encrypt_secret.py)
             curl -s -X PUT \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
