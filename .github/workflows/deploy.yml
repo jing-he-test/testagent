@@ -91,7 +91,7 @@ jobs:
 
           for i in $(seq 1 60); do
             RESPONSE=$(curl -s \
-              "${{ secrets.JOULE_STUDIO_HOST }}/build-service/solutions('$SOLUTION_ID')/versions('main')/deploymentJobs" \
+              "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploymentJobs" \
               -H "Authorization: Bearer ${{ steps.auth.outputs.token }}")
 
             STATUS=$(echo "$RESPONSE" | jq -r '.value[0].status_code // "pending"')
