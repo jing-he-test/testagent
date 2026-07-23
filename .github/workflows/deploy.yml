@@ -1,15 +1,6 @@
 name: Deploy to Joule Studio
 on:
   workflow_dispatch:
-    inputs:
-      force:
-        description: 'Overwrite existing deployment'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
 permissions:
   contents: read
 jobs:
@@ -26,7 +17,6 @@ jobs:
       - name: Import and deploy solution
         id: deploy
         env:
-          OVERWRITE: ${{ inputs.force }}
           JOULE_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
           JOULE_TOKEN: ${{ secrets.JOULE_STUDIO_TOKEN }}
         run: |
@@ -44,7 +34,7 @@ jobs:
           payload = {
               'semanticVersion': 'main',
               'zip': z,
-              'overwrite': os.environ['OVERWRITE'] == 'true'
+              'overwrite': True
           }
           if hint:
               payload['solutionId'] = hint
@@ -60,8 +50,9 @@ jobs:
 
           SOLUTION_ID=$(echo "$RESP" | jq -r '.solutionId // empty')
           if [ -z "$SOLUTION_ID" ]; then
-            echo "Import failed: $RESP"
-            echo "Token may have expired — run jl login and re-sync from Joule Studio UI"
+            ERROR=$(echo "$RESP" | jq -r '.error.message // .error // .')
+            echo "Import failed: $ERROR"
+            echo "If 401: token expired — run jl login and re-sync from Joule Studio UI"
             exit 1
           fi
           echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
