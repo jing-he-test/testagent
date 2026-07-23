@@ -12,7 +12,6 @@ on:
           - 'true'
 permissions:
   contents: read
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -38,14 +37,20 @@ jobs:
           echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "Access token obtained"
           if [ -n "$NEW_REFRESH_TOKEN" ]; then
-            pip install PyNaCl -q
+            pip install PyNaCl -q 2>/dev/null
             KEY_DATA=$(curl -s \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
             KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id')
             PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
-            ENCRYPTED=$(python3 -c "import base64,sys,nacl.public; pk=nacl.public.PublicKey(base64.b64decode('$PUBKEY')); print(base64.b64encode(nacl.public.SealedBox(pk).encrypt(b'$NEW_REFRESH_TOKEN')).decode())")
+            printf '%s' "import base64,os,nacl.public
+pubkey=base64.b64decode(os.environ['GH_PUBKEY']+'==')
+token=os.environ['NEW_TOKEN'].encode()
+pk=nacl.public.PublicKey(pubkey)
+print(base64.b64encode(nacl.public.SealedBox(pk).encrypt(token)).decode())
+" > /tmp/encrypt.py
+            ENCRYPTED=$(GH_PUBKEY="$PUBKEY" NEW_TOKEN="$NEW_REFRESH_TOKEN" python3 /tmp/encrypt.py)
             curl -s -X PUT \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
