@@ -26,8 +26,6 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Step 1: Exchange refresh token → access token, rotate refresh token ──
-      # IAS refresh tokens are single-use. Each exchange returns a NEW refresh
-      # token. We immediately write it back to GitHub Secrets so the next run works.
       - name: Get IAS access token and rotate refresh token
         id: auth
         run: |
@@ -48,11 +46,10 @@ jobs:
             echo "   Re-sync with GitHub from Joule Studio UI to get a fresh refresh token."
             exit 1
           fi
-
           echo "token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Access token obtained"
 
-          # Rotate the refresh token immediately so the next run works
+          # Rotate refresh token immediately — IAS tokens are single-use
           if [ -n "$NEW_REFRESH_TOKEN" ]; then
             pip install PyNaCl -q
             KEY_DATA=$(curl -s \
@@ -61,13 +58,11 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
             KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id')
             PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
-
             ENCRYPTED=$(python3 - <<EOF
-import base64, nacl.public, nacl.encoding
+import base64, nacl.public
 pk = nacl.public.PublicKey(base64.b64decode("$PUBKEY"))
 box = nacl.public.SealedBox(pk)
-encrypted = box.encrypt(b"$NEW_REFRESH_TOKEN")
-print(base64.b64encode(encrypted).decode())
+print(base64.b64encode(box.encrypt(b"$NEW_REFRESH_TOKEN")).decode())
 EOF
 )
             curl -s -X PUT \
@@ -79,50 +74,63 @@ EOF
             echo "✅ Refresh token rotated for next run"
           fi
 
-      # ── Step 2: Install Joule Studio CLI ─────────────────────────────────────
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Joule Studio CLI
+      # ── Step 2: Package solution ZIP ─────────────────────────────────────────
+      - name: Package solution
+        id: package
         run: |
-          npm install -g @sap/joule-work-dev-cli-early-adopters \
-            --registry https://int.repositories.cloud.sap/artifactory/api/npm/build-milestones-npm/ \
-            --silent
-          echo "✅ CLI installed: $(jl --version)"
+          zip -r solution.zip assets solution.yaml -x "*.git*"
+          echo "✅ Packaged $(du -sh solution.zip | cut -f1) ZIP"
 
-      # ── Step 3: Build & Deploy ────────────────────────────────────────────────
-      - name: Build and deploy solution
-        id: deploy
-        env:
-          JOULE_STUDIO_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
-          JOULE_STUDIO_TOKEN: ${{ steps.auth.outputs.token }}
+      # ── Step 3: Import ZIP → creates/updates solution ────────────────────────
+      - name: Import solution
+        id: import
         run: |
-          FORCE_FLAG=""
-          if [ "${{ inputs.force }}" = "true" ]; then
-            FORCE_FLAG="--force"
-          fi
+          ZIP_B64=$(base64 -w0 solution.zip)
+          OVERWRITE=${{ inputs.force }}
 
-          jl solution build
-          jl solution deploy $FORCE_FLAG
+          RESPONSE=$(curl -s -X POST \
+            "${{ secrets.JOULE_STUDIO_HOST }}/solutions/importZip" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"semanticVersion\":\"main\",\"zip\":\"$ZIP_B64\",\"overwrite\":$OVERWRITE}")
 
-          SOLUTION_ID=$(cat .build | jq -r '.solution_id // empty')
+          SOLUTION_ID=$(echo "$RESPONSE" | jq -r '.solutionId // empty')
+          ERRORS=$(echo "$RESPONSE" | jq -r '.errors // [] | length')
+
           if [ -z "$SOLUTION_ID" ]; then
-            echo "❌ Could not read solution_id from .build file"
+            echo "❌ Import failed: $(echo "$RESPONSE" | jq -r '.error // .message // .')"
             exit 1
           fi
-          echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
-          echo "✅ Solution deployed: $SOLUTION_ID"
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "❌ Import rejected files: $(echo "$RESPONSE" | jq -r '.errors')"
+            exit 1
+          fi
 
-      # ── Step 4: Poll deployment status ───────────────────────────────────────
-      - name: Wait for deployment to complete
-        env:
-          JOULE_STUDIO_HOST: ${{ secrets.JOULE_STUDIO_HOST }}
-          JOULE_STUDIO_TOKEN: ${{ steps.auth.outputs.token }}
+          echo "solution_id=$SOLUTION_ID" >> $GITHUB_OUTPUT
+          echo "✅ Solution imported: $SOLUTION_ID"
+
+      # ── Step 4: Trigger deployment ────────────────────────────────────────────
+      - name: Deploy solution
         run: |
-          SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
-          echo "Polling deployment status for solution $SOLUTION_ID..."
+          SOLUTION_ID="${{ steps.import.outputs.solution_id }}"
+
+          RESPONSE=$(curl -s -X POST \
+            "${{ secrets.JOULE_STUDIO_HOST }}/solutions/$SOLUTION_ID/versions/main/deploy" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Content-Type: application/json")
+
+          JOB_ID=$(echo "$RESPONSE" | jq -r '.ID // empty')
+          if [ -z "$JOB_ID" ]; then
+            echo "❌ Deploy failed: $(echo "$RESPONSE" | jq -r '.error // .message // .')"
+            exit 1
+          fi
+          echo "✅ Deployment triggered, job: $JOB_ID"
+
+      # ── Step 5: Poll deployment status ───────────────────────────────────────
+      - name: Wait for deployment to complete
+        run: |
+          SOLUTION_ID="${{ steps.import.outputs.solution_id }}"
+          echo "Polling deployment status..."
 
           for i in $(seq 1 60); do
             RESPONSE=$(curl -s \
@@ -136,29 +144,23 @@ EOF
               echo "✅ Deployment completed"
               break
             fi
-
             if [ "$STATUS" = "failed" ] || [ "$STATUS" = "timeout" ]; then
-              echo "❌ Deployment $STATUS"
+              LOGS=$(echo "$RESPONSE" | jq -r '.value[0].logs // ""')
+              echo "❌ Deployment $STATUS: $LOGS"
               exit 1
             fi
 
             sleep 10
           done
 
-      # ── Step 5: Summary ───────────────────────────────────────────────────────
+      # ── Step 6: Summary ───────────────────────────────────────────────────────
       - name: Deployment summary
         if: success()
         run: |
-          SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
-          ENGAGEMENT_LAYER="${{ secrets.JOULE_STUDIO_ENGAGEMENT_LAYER_URL }}"
-
+          SOLUTION_ID="${{ steps.import.outputs.solution_id }}"
           echo "### ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| **Solution** | \`ap-invoice-automation-91768\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Solution ID** | \`$SOLUTION_ID\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Environment** | staging |" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$ENGAGEMENT_LAYER" ]; then
-            echo "| **View** | [$ENGAGEMENT_LAYER/new/build/overview/solutions/$SOLUTION_ID]($ENGAGEMENT_LAYER/new/build/overview/solutions/$SOLUTION_ID) |" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "| **Host** | \`${{ secrets.JOULE_STUDIO_HOST }}\` |" >> $GITHUB_STEP_SUMMARY
