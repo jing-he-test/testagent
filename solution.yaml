@@ -1,0 +1,10 @@
+apiVersion: solution.sap/v1
+kind: Solution
+
+metadata:
+  name: simple-greeting-agent-15ac4
+  version: 1.0.0
+  description: A simple AI greeting agent that welcomes and interacts with users in a friendly, conversational manner.
+
+assets:
+  - ref: ./assets/greeting-agent/asset.yaml
