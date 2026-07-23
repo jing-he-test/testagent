@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Get IAS access token and rotate refresh token
         id: auth
         run: |
@@ -44,12 +45,7 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key")
             KEY_ID=$(echo "$KEY_DATA" | jq -r '.key_id')
             PUBKEY=$(echo "$KEY_DATA" | jq -r '.key')
-            ENCRYPTED=$(python3 - <<EOF
-import base64, nacl.public
-pk = nacl.public.PublicKey(base64.b64decode("$PUBKEY"))
-print(base64.b64encode(nacl.public.SealedBox(pk).encrypt(b"$NEW_REFRESH_TOKEN")).decode())
-EOF
-)
+            ENCRYPTED=$(python3 -c "import base64,sys,nacl.public; pk=nacl.public.PublicKey(base64.b64decode('$PUBKEY')); print(base64.b64encode(nacl.public.SealedBox(pk).encrypt(b'$NEW_REFRESH_TOKEN')).decode())")
             curl -s -X PUT \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
@@ -58,8 +54,10 @@ EOF
               -d "{\"encrypted_value\":\"$ENCRYPTED\",\"key_id\":\"$KEY_ID\"}" > /dev/null
             echo "Refresh token rotated"
           fi
+
       - name: Package solution
         run: zip -r solution.zip assets solution.yaml
+
       - name: Import and deploy solution
         id: deploy
         run: |
@@ -76,6 +74,7 @@ EOF
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" > /dev/null
           echo "Deployed: $SOLUTION_ID"
+
       - name: Poll deployment status
         run: |
           SOLUTION_ID="${{ steps.deploy.outputs.solution_id }}"
@@ -89,6 +88,7 @@ EOF
             [ "$STATUS" = "failed" ] || [ "$STATUS" = "timeout" ] && exit 1
             sleep 10
           done
+
       - name: Summary
         if: success()
         run: echo "### Deployed ${{ steps.deploy.outputs.solution_id }}" >> $GITHUB_STEP_SUMMARY
