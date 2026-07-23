@@ -21,7 +21,7 @@ jobs:
       - name: Package solution
         run: |
           # Zip everything except .git and .github folders
-          zip -r solution.zip . -x ".git/*" -x ".github/*" -x "*.DS_Store"
+          zip -r solution.zip assets solution.yaml .build
           echo "ZIP size: $(du -sh solution.zip | cut -f1)"
 
       - name: Import and deploy solution
