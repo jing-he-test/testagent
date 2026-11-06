@@ -1,6 +1,6 @@
 # Simple Greeting Agent
 
-Simple Greeting Agent sssssssfffff
+Simple Greeting Agent test
 
 ## Business challenge
 
